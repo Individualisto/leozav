@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Карта зоопарка – реальное время</title>
+    <!-- Leaflet CSS & JS (open street map) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: system-ui, 'Segoe UI', sans-serif; height: 100vh; display: flex; flex-direction: column; }
+        #map { flex: 1; z-index: 1; }
+        .controls {
+            background: white;
+            padding: 12px 20px;
+            border-bottom: 1px solid #ccc;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+            z-index: 2;
+        }
+        button {
+            background: #2c7a47;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 30px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: 0.2s;
+        }
+        button:hover { background: #1e5a36; transform: scale(1.02); }
+        .info {
+            background: #f0f2f5;
+            border-radius: 20px;
+            padding: 6px 12px;
+            font-size: 14px;
+            color: #1e466e;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5);
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .modal-card {
+            background: white;
+            padding: 24px;
+            border-radius: 24px;
+            width: 300px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.2);
+        }
+        .modal-card input, .modal-card select {
+            width: 100%;
+            margin: 12px 0;
+            padding: 8px;
+            border-radius: 12px;
+            border: 1px solid #ccc;
+        }
+        .modal-card button {
+            width: 100%;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+<div class="controls">
+    <button id="addAnimalBtn">➕ Добавить животное</button>
+    <div class="info">🐘 Перетаскивайте маркеры — все сотрудники видят изменения</div>
+    <div class="info">🔄 Режим реального времени</div>
+</div>
+<div id="map"></div>
+
+<!-- Модальное окно для добавления животного -->
+<div id="animalModal" class="modal">
+    <div class="modal-card">
+        <h3>Новый обитатель</h3>
+        <input type="text" id="animalName" placeholder="Имя (например, Бонифаций)" autocomplete="off">
+        <input type="text" id="animalSpecies" placeholder="Вид (лев, жираф, пингвин...)" autocomplete="off">
+        <button id="saveAnimalBtn">✨ Создать на карте</button>
+        <button id="closeModalBtn" style="background:#aaa;">Отмена</button>
+    </div>
+</div>
+
+<script>
+    // ========== НАСТРОЙКИ FIREBASE ==========
+    // Замените на свои данные из консоли Firebase
+    const firebaseConfig = {
+        apiKey: "AIzaSyDummyExample_DoNotCopy",      // <- вставьте свой apiKey
+        authDomain: "zoo-map-realtime.firebaseapp.com",
+        databaseURL: "https://zoo-map-realtime-default-rtdb.firebaseio.com",
+        projectId: "zoo-map-realtime",
+        storageBucket: "zoo-map-realtime.appspot.com",
+        messagingSenderId: "123456789012",
+        appId: "1:123456789012:web:abcdef123456"
+    };
+
+    // Инициализация Firebase
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+    const animalsRef = db.ref('animals');   // коллекция всех маркеров
+
+    // ========== ИНИЦИАЛИЗАЦИЯ КАРТЫ (OpenStreetMap) ==========
+    const map = L.map('map').setView([56.0239, 92.8938], 17); // Роев Ручей (координаты))
+    const markersMap = new Map();   // хранилище активных маркеров
+ L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+    maxZoom: 18
+}).addTo(map);
+
+    // ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+    // Генерация иконки животного (разные цвета / эмодзи по виду – для наглядности)
+    function getAnimalIcon(species) {
+        const speciesLower = (species || "").toLowerCase();
+        let emoji = "🐾";
+        if (speciesLower.includes("лев") || speciesLower.includes("lion")) emoji = "🦁";
+        else if (speciesLower.includes("тигр")) emoji = "🐅";
+        else if (speciesLower.includes("слон")) emoji = "🐘";
+        else if (speciesLower.includes("жираф")) emoji = "🦒";
+        else if (speciesLower.includes("пингвин")) emoji = "🐧";
+        else if (speciesLower.includes("медведь")) emoji = "🐻";
+        else if (speciesLower.includes("обезьян")) emoji = "🐒";
+        else if (speciesLower.includes("зебр")) emoji = "🦓";
+        else emoji = "🐾";
+        
+        return L.divIcon({
+            html: `<div style="font-size: 28px; text-shadow: 0 0 3px white; cursor: grab; text-align: center; filter: drop-shadow(2px 2px 2px rgba(0,0,0,0.3));">${emoji}</div>`,
+            iconSize: [32, 32],
+            popupAnchor: [0, -12],
+            className: 'animal-marker'
+        });
+    }
+
+    // Создать или обновить маркер на карте (синхронизация из БД)
+    function updateOrCreateMarker(animal) {
+        const { id, name, species, lat, lng } = animal;
+        if (!id || lat === undefined || lng === undefined) return;
+        
+        // Если маркер уже существует — обновить позицию без пересоздания
+        if (markersMap.has(id)) {
+            const marker = markersMap.get(id);
+            marker.setLatLng([lat, lng]);
+            // Обновить всплывающее окно (на случай смены имени)
+            marker.setPopupContent(createPopupContent(animal));
+            return;
+        }
+        
+        // Создать новый маркер
+        const icon = getAnimalIcon(species);
+        const marker = L.marker([lat, lng], { draggable: true, icon: icon }).addTo(map);
+        marker.bindPopup(createPopupContent(animal));
+        
+        // Обработчик перетаскивания: при окончании сохраняем новые координаты в Firebase
+        marker.on('dragend', function(e) {
+            const newPos = marker.getLatLng();
+            const updates = {
+                lat: newPos.lat,
+                lng: newPos.lng
+            };
+            // Обновляем только нужное животное в БД (реальное время разошлёт всем)
+            animalsRef.child(id).update(updates).catch(err => console.warn("Ошибка сохранения:", err));
+        });
+        
+        markersMap.set(id, marker);
+    }
+    
+    // HTML-контент popup при клике на маркер
+    function createPopupContent(animal) {
+        return `
+            <div style="min-width: 140px;">
+                <strong>🐕 ${escapeHtml(animal.name)}</strong><br>
+                <span>🧬 ${escapeHtml(animal.species)}</span><br>
+                <button class="delete-animal-btn" data-id="${animal.id}" style="margin-top: 8px; background:#c0392b; color:white; border:none; padding:4px 12px; border-radius:20px; cursor:pointer;">🗑 Удалить</button>
+            </div>
+        `;
+    }
+    
+    // Удаление маркера через всплывающее окно (обработчик делегирования)
+    function attachPopupEvents() {
+        document.querySelectorAll('.delete-animal-btn').forEach(btn => {
+            if (btn.dataset.listener) return;
+            btn.dataset.listener = 'true';
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const id = btn.dataset.id;
+                if (id && confirm('Убрать животное с карты?')) {
+                    animalsRef.child(id).remove().catch(err => alert('Ошибка удаления'));
+                }
+            });
+        });
+    }
+    
+    // базовая защита от XSS
+    function escapeHtml(str) { return String(str).replace(/[&<>]/g, function(m){if(m==='&') return '&amp;'; if(m==='<') return '&lt;'; if(m==='>') return '&gt;'; return m;}); }
+    
+    // ========== РЕАЛЬНОЕ ВРЕМЯ: слушаем изменения из Firebase ==========
+    animalsRef.on('child_added', (snapshot) => {
+        const animal = snapshot.val();
+        animal.id = snapshot.key;
+        updateOrCreateMarker(animal);
+        // после обновления popup надо перепривязать кнопки удаления (но они создаются динамически)
+        setTimeout(attachPopupEvents, 100);
+    });
+    
+    animalsRef.on('child_changed', (snapshot) => {
+        const animal = snapshot.val();
+        animal.id = snapshot.key;
+        updateOrCreateMarker(animal);
+        setTimeout(attachPopupEvents, 100);
+    });
+    
+    animalsRef.on('child_removed', (snapshot) => {
+        const id = snapshot.key;
+        if (markersMap.has(id)) {
+            map.removeLayer(markersMap.get(id));
+            markersMap.delete(id);
+        }
+    });
+    
+    // ========== ДОБАВЛЕНИЕ НОВОГО ЖИВОТНОГО ==========
+    const modal = document.getElementById('animalModal');
+    const addBtn = document.getElementById('addAnimalBtn');
+    const closeModal = document.getElementById('closeModalBtn');
+    const saveBtn = document.getElementById('saveAnimalBtn');
+    
+    addBtn.onclick = () => { modal.style.display = 'flex'; };
+    closeModal.onclick = () => { modal.style.display = 'none'; };
+    window.onclick = (e) => { if (e.target === modal) modal.style.display = 'none'; };
+    
+    saveBtn.onclick = () => {
+        const name = document.getElementById('animalName').value.trim();
+        const species = document.getElementById('animalSpecies').value.trim();
+        if (!name || !species) {
+            alert("Пожалуйста, введите имя и вид животного");
+            return;
+        }
+        // Новое животное появляется в центре текущего вида карты (или можно задать смещение)
+        const center = map.getCenter();
+        const newAnimal = {
+            name: name,
+            species: species,
+            lat: center.lat,
+            lng: center.lng,
+            createdAt: Date.now()
+        };
+        animalsRef.push(newAnimal).then(() => {
+            modal.style.display = 'none';
+            document.getElementById('animalName').value = '';
+            document.getElementById('animalSpecies').value = '';
+        }).catch(err => alert("Ошибка добавления: " + err.message));
+    };
+    
+    // Удаляем все маркеры, если нужно – только для демонстрации, но не трогаем существующие.
+    // Дополнительно: показываем, что карта готова
+    map.on('load', () => console.log("Карта загружена, синхронизация активна"));
+    
+    // Небольшой лог для уверенности, что Firebase сконфигурирована
+    console.log("Приложение запущено. Ожидание данных из Firebase...");
+    
+    // Помощник для обновления кнопок удаления (делегирование)
+    setInterval(() => attachPopupEvents(), 1000);
+</script>
+</body>
+</html>
